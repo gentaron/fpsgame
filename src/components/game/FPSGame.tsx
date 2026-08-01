@@ -2,20 +2,87 @@
 
 import { useRef, useEffect, useCallback, useState, useMemo } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { PointerLockControls } from '@react-three/drei';
 import * as THREE from 'three';
 import { useGameStore } from '@/store/game-store';
 
-// Shared camera position ref (set by PlayerController, read by enemies)
-const playerPosition = new THREE.Vector3(0, 1.7, 0);
+// Shared player world position (set by PlayerController, read by enemies)
+const playerWorldPos = new THREE.Vector3(0, 0, 0);
+// Shared player rotation Y
+let playerRotY = 0;
 
-// ============ PLAYER CONTROLLER ============
-function PlayerController() {
-  const { camera } = useThree();
+// ============ THIRD-PERSON CAMERA ============
+function ThirdPersonCamera() {
+  const { camera, gl } = useThree();
+  const mouseDown = useRef(false);
+  const prevMouse = useRef({ x: 0, y: 0 });
+  const yaw = useRef(0);   // horizontal orbit angle
+  const pitch = useRef(0.3); // vertical orbit angle (slightly above)
+  const CAMERA_DISTANCE = 6;
+  const CAMERA_HEIGHT = 3;
+  const SENSITIVITY = 0.003;
+
+  useEffect(() => {
+    const canvas = gl.domElement;
+
+    const onMouseDown = (e: MouseEvent) => {
+      if (e.button === 0 || e.button === 2) {
+        mouseDown.current = true;
+        prevMouse.current = { x: e.clientX, y: e.clientY };
+      }
+    };
+    const onMouseUp = () => { mouseDown.current = false; };
+    const onMouseMove = (e: MouseEvent) => {
+      if (!mouseDown.current) return;
+      const dx = e.clientX - prevMouse.current.x;
+      const dy = e.clientY - prevMouse.current.y;
+      prevMouse.current = { x: e.clientX, y: e.clientY };
+      yaw.current -= dx * SENSITIVITY;
+      pitch.current = Math.max(-0.2, Math.min(1.2, pitch.current + dy * SENSITIVITY));
+    };
+    const onContextMenu = (e: Event) => e.preventDefault();
+
+    canvas.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('mouseup', onMouseUp);
+    window.addEventListener('mousemove', onMouseMove);
+    canvas.addEventListener('contextmenu', onContextMenu);
+
+    return () => {
+      canvas.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('mouseup', onMouseUp);
+      window.removeEventListener('mousemove', onMouseMove);
+      canvas.removeEventListener('contextmenu', onContextMenu);
+    };
+  }, [gl]);
+
+  useFrame(() => {
+    const px = playerWorldPos.x;
+    const pz = playerWorldPos.z;
+
+    // Camera orbits behind the player based on yaw
+    const camX = px + Math.sin(yaw.current) * CAMERA_DISTANCE;
+    const camZ = pz + Math.cos(yaw.current) * CAMERA_DISTANCE;
+    const camY = CAMERA_HEIGHT + pitch.current * 3;
+
+    camera.position.lerp(new THREE.Vector3(camX, camY, camZ), 0.15);
+    camera.lookAt(px, 1.2, pz);
+
+    // Player faces the direction the camera is looking
+    playerRotY = yaw.current;
+  });
+
+  return null;
+}
+
+// ============ PLAYER CHARACTER ============
+function PlayerCharacter() {
+  const groupRef = useRef<THREE.Group>(null);
   const moveState = useRef({ forward: false, backward: false, left: false, right: false });
   const velocity = useRef(new THREE.Vector3());
-  const direction = useRef(new THREE.Vector3());
-  const controlsRef = useRef<React.ComponentRef<typeof PointerLockControls>>(null);
+  const leftArmRef = useRef<THREE.Group>(null);
+  const rightArmRef = useRef<THREE.Group>(null);
+  const leftLegRef = useRef<THREE.Group>(null);
+  const rightLegRef = useRef<THREE.Group>(null);
+  const walkPhase = useRef(0);
 
   const SPEED = 10;
   const FRICTION = 8;
@@ -47,50 +114,229 @@ function PlayerController() {
   }, []);
 
   useFrame((_, delta) => {
-    if (!controlsRef.current?.isLocked) return;
+    if (!groupRef.current) return;
     const { isPlaying } = useGameStore.getState();
     if (!isPlaying) return;
 
     const dt = Math.min(delta, 0.1);
-    direction.current.set(0, 0, 0);
-    if (moveState.current.forward) direction.current.z -= 1;
-    if (moveState.current.backward) direction.current.z += 1;
-    if (moveState.current.left) direction.current.x -= 1;
-    if (moveState.current.right) direction.current.x += 1;
-    direction.current.normalize();
+    const dir = new THREE.Vector3();
+    if (moveState.current.forward) dir.z -= 1;
+    if (moveState.current.backward) dir.z += 1;
+    if (moveState.current.left) dir.x -= 1;
+    if (moveState.current.right) dir.x += 1;
 
-    const euler = new THREE.Euler(0, camera.rotation.y, 0, 'YXZ');
-    direction.current.applyEuler(euler);
+    const isMoving = dir.lengthSq() > 0;
+    if (isMoving) dir.normalize();
 
-    velocity.current.x += direction.current.x * SPEED * dt;
-    velocity.current.z += direction.current.z * SPEED * dt;
+    // Rotate movement direction by camera yaw (playerRotY)
+    const euler = new THREE.Euler(0, playerRotY, 0, 'YXZ');
+    dir.applyEuler(euler);
+
+    velocity.current.x += dir.x * SPEED * dt;
+    velocity.current.z += dir.z * SPEED * dt;
     velocity.current.x *= Math.max(0, 1 - FRICTION * dt);
     velocity.current.z *= Math.max(0, 1 - FRICTION * dt);
 
-    /* eslint-disable react-hooks/immutability */
-    camera.position.x += velocity.current.x * dt;
-    camera.position.z += velocity.current.z * dt;
-    camera.position.x = Math.max(-24, Math.min(24, camera.position.x));
-    camera.position.z = Math.max(-24, Math.min(24, camera.position.z));
-    camera.position.y = 1.7;
-    /* eslint-enable react-hooks/immutability */
+    groupRef.current.position.x += velocity.current.x * dt;
+    groupRef.current.position.z += velocity.current.z * dt;
+    groupRef.current.position.x = Math.max(-24, Math.min(24, groupRef.current.position.x));
+    groupRef.current.position.z = Math.max(-24, Math.min(24, groupRef.current.position.z));
+    groupRef.current.position.y = 0;
+
+    // Face movement direction (smooth rotation)
+    if (isMoving) {
+      const targetRot = Math.atan2(velocity.current.x, velocity.current.z);
+      let currentRot = groupRef.current.rotation.y;
+      let diff = targetRot - currentRot;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      groupRef.current.rotation.y += diff * 0.15;
+    }
+
+    // Walking animation
+    if (isMoving) {
+      walkPhase.current += dt * 10;
+      const swing = Math.sin(walkPhase.current) * 0.5;
+      if (leftLegRef.current) leftLegRef.current.rotation.x = swing;
+      if (rightLegRef.current) rightLegRef.current.rotation.x = -swing;
+      if (leftArmRef.current) leftArmRef.current.rotation.x = -swing * 0.6;
+      if (rightArmRef.current) rightArmRef.current.rotation.x = swing * 0.6;
+    } else {
+      // Idle breathing
+      if (leftArmRef.current) leftArmRef.current.rotation.x *= 0.9;
+      if (rightArmRef.current) rightArmRef.current.rotation.x *= 0.9;
+      if (leftLegRef.current) leftLegRef.current.rotation.x *= 0.9;
+      if (rightLegRef.current) rightLegRef.current.rotation.x *= 0.9;
+    }
 
     // Update shared position
-    playerPosition.copy(camera.position);
+    playerWorldPos.copy(groupRef.current.position);
   });
 
-  return <PointerLockControls ref={controlsRef} />;
+  return (
+    <group ref={groupRef} position={[0, 0, 0]}>
+      {/* Body / Torso */}
+      <mesh position={[0, 1.15, 0]} castShadow>
+        <boxGeometry args={[0.7, 0.9, 0.4]} />
+        <meshStandardMaterial color="#3366aa" />
+      </mesh>
+      {/* Belt / Waist */}
+      <mesh position={[0, 0.72, 0]} castShadow>
+        <boxGeometry args={[0.72, 0.15, 0.42]} />
+        <meshStandardMaterial color="#333333" />
+      </mesh>
+      {/* Head */}
+      <mesh position={[0, 1.85, 0]} castShadow>
+        <boxGeometry args={[0.4, 0.45, 0.4]} />
+        <meshStandardMaterial color="#eebb88" />
+      </mesh>
+      {/* Helmet/Hat */}
+      <mesh position={[0, 2.12, 0]} castShadow>
+        <boxGeometry args={[0.46, 0.15, 0.46]} />
+        <meshStandardMaterial color="#225522" />
+      </mesh>
+      {/* Eyes */}
+      <mesh position={[-0.08, 1.88, 0.2]}>
+        <boxGeometry args={[0.08, 0.06, 0.02]} />
+        <meshStandardMaterial color="#222222" />
+      </mesh>
+      <mesh position={[0.08, 1.88, 0.2]}>
+        <boxGeometry args={[0.08, 0.06, 0.02]} />
+        <meshStandardMaterial color="#222222" />
+      </mesh>
+      {/* Left Arm (pivot at shoulder) */}
+      <group position={[-0.52, 1.45, 0]} ref={leftArmRef}>
+        <mesh position={[0, -0.35, 0]} castShadow>
+          <boxGeometry args={[0.22, 0.7, 0.22]} />
+          <meshStandardMaterial color="#3366aa" />
+        </mesh>
+        {/* Left Hand */}
+        <mesh position={[0, -0.72, 0]}>
+          <boxGeometry args={[0.16, 0.12, 0.16]} />
+          <meshStandardMaterial color="#eebb88" />
+        </mesh>
+      </group>
+      {/* Right Arm (pivot at shoulder) - holds gun */}
+      <group position={[0.52, 1.45, 0]} ref={rightArmRef}>
+        <mesh position={[0, -0.35, 0]} castShadow>
+          <boxGeometry args={[0.22, 0.7, 0.22]} />
+          <meshStandardMaterial color="#3366aa" />
+        </mesh>
+        {/* Right Hand */}
+        <mesh position={[0, -0.72, 0]}>
+          <boxGeometry args={[0.16, 0.12, 0.16]} />
+          <meshStandardMaterial color="#eebb88" />
+        </mesh>
+        {/* Gun attached to right hand */}
+        <TPSGun />
+      </group>
+      {/* Left Leg (pivot at hip) */}
+      <group position={[-0.18, 0.65, 0]} ref={leftLegRef}>
+        <mesh position={[0, -0.3, 0]} castShadow>
+          <boxGeometry args={[0.28, 0.6, 0.28]} />
+          <meshStandardMaterial color="#444466" />
+        </mesh>
+        {/* Shoe */}
+        <mesh position={[0, -0.63, 0.03]}>
+          <boxGeometry args={[0.28, 0.12, 0.35]} />
+          <meshStandardMaterial color="#222222" />
+        </mesh>
+      </group>
+      {/* Right Leg (pivot at hip) */}
+      <group position={[0.18, 0.65, 0]} ref={rightLegRef}>
+        <mesh position={[0, -0.3, 0]} castShadow>
+          <boxGeometry args={[0.28, 0.6, 0.28]} />
+          <meshStandardMaterial color="#444466" />
+        </mesh>
+        {/* Shoe */}
+        <mesh position={[0, -0.63, 0.03]}>
+          <boxGeometry args={[0.28, 0.12, 0.35]} />
+          <meshStandardMaterial color="#222222" />
+        </mesh>
+      </group>
+    </group>
+  );
 }
 
-// ============ SHOOTING (raycasting) ============
+// ============ THIRD-PERSON GUN MODEL ============
+function TPSGun() {
+  const gunRef = useRef<THREE.Group>(null);
+  const recoilRef = useRef(0);
+
+  useFrame(() => {
+    if (!gunRef.current) return;
+    if (recoilRef.current > 0) {
+      recoilRef.current *= 0.85;
+      if (recoilRef.current < 0.001) recoilRef.current = 0;
+    }
+    gunRef.current.rotation.x = -recoilRef.current * 0.4;
+    gunRef.current.position.z = -0.15 - 0.03 * recoilRef.current;
+  });
+
+  useEffect(() => {
+    const unsub = useGameStore.subscribe((state, prev) => {
+      if (state.ammo < prev.ammo) {
+        recoilRef.current = 1;
+      }
+    });
+    return unsub;
+  }, []);
+
+  const { isReloading } = useGameStore();
+  const reloadOffset = isReloading ? 0.3 : 0;
+
+  return (
+    <group ref={gunRef} position={[0, -0.6 + reloadOffset, -0.15]}>
+      {/* Gun body */}
+      <mesh castShadow>
+        <boxGeometry args={[0.08, 0.1, 0.45]} />
+        <meshStandardMaterial color="#222222" metalness={0.8} roughness={0.2} />
+      </mesh>
+      {/* Barrel */}
+      <mesh position={[0, 0.02, -0.3]} castShadow>
+        <cylinderGeometry args={[0.02, 0.025, 0.22, 8]} />
+        <meshStandardMaterial color="#333333" metalness={0.9} roughness={0.1} />
+      </mesh>
+      {/* Handle */}
+      <mesh position={[0, -0.1, 0.08]} rotation={[0.3, 0, 0]}>
+        <boxGeometry args={[0.06, 0.16, 0.07]} />
+        <meshStandardMaterial color="#4a3520" roughness={0.9} />
+      </mesh>
+      {/* Magazine */}
+      <mesh position={[0, -0.1, -0.04]}>
+        <boxGeometry args={[0.05, 0.14, 0.07]} />
+        <meshStandardMaterial color="#1a1a1a" metalness={0.7} roughness={0.3} />
+      </mesh>
+      {/* Sight */}
+      <mesh position={[0, 0.07, -0.18]}>
+        <boxGeometry args={[0.02, 0.04, 0.02]} />
+        <meshStandardMaterial color="#111111" />
+      </mesh>
+    </group>
+  );
+}
+
+// ============ SHOOTING (raycasting from camera center) ============
 function ShootingSystem() {
   const { camera, scene } = useThree();
   const { shoot, hitEnemy, removeEnemy } = useGameStore();
   const raycaster = useRef(new THREE.Raycaster());
-  const [muzzleFlash, setMuzzleFlash] = useState(false);
+  const muzzleRef = useRef<THREE.PointLight>(null);
+  const muzzleTimer = useRef(0);
+
+  useFrame((_, delta) => {
+    if (muzzleTimer.current > 0) {
+      muzzleTimer.current -= delta;
+      if (muzzleTimer.current <= 0 && muzzleRef.current) {
+        muzzleRef.current.intensity = 0;
+      }
+    }
+  });
 
   useEffect(() => {
-    const onClick = () => {
+    const onClick = (e: MouseEvent) => {
+      // Only shoot on left click
+      if (e.button !== 0) return;
       const state = useGameStore.getState();
       if (!state.isPlaying) return;
       if (state.ammo <= 0 || state.isReloading) {
@@ -98,9 +344,16 @@ function ShootingSystem() {
         return;
       }
       shoot();
-      setMuzzleFlash(true);
-      setTimeout(() => setMuzzleFlash(false), 50);
 
+      // Muzzle flash at gun tip (near player)
+      if (muzzleRef.current) {
+        muzzleRef.current.position.copy(playerWorldPos);
+        muzzleRef.current.position.y = 1.0;
+        muzzleRef.current.intensity = 8;
+        muzzleTimer.current = 0.05;
+      }
+
+      // Raycast from camera center (crosshair)
       raycaster.current.setFromCamera(new THREE.Vector2(0, 0), camera);
       const enemyMeshes: THREE.Object3D[] = [];
       scene.traverse((child) => {
@@ -119,21 +372,11 @@ function ShootingSystem() {
         }
       }
     };
-    window.addEventListener('click', onClick);
-    return () => window.removeEventListener('click', onClick);
+    window.addEventListener('mousedown', onClick);
+    return () => window.removeEventListener('mousedown', onClick);
   }, [camera, scene, shoot, hitEnemy, removeEnemy]);
 
-  if (muzzleFlash) {
-    return (
-      <pointLight
-        position={[0.3, -0.2, -1]}
-        color="#ffaa00"
-        intensity={5}
-        distance={10}
-      />
-    );
-  }
-  return null;
+  return <pointLight ref={muzzleRef} intensity={0} distance={8} color="#ffaa00" />;
 }
 
 // ============ ENVIRONMENT ============
@@ -175,7 +418,7 @@ function Ceiling() {
 }
 
 function Walls() {
- const wallColor = '#3a3a3a';
+  const wallColor = '#3a3a3a';
   const wallData = [
     { pos: [0, 3, -25] as [number, number, number], rot: [0, 0, 0] as [number, number, number] },
     { pos: [0, 3, 25] as [number, number, number], rot: [0, Math.PI, 0] as [number, number, number] },
@@ -227,8 +470,7 @@ function Enemy({ id, position, isHit }: { id: string; position: [number, number,
     const { isPlaying, isGameOver } = useGameStore.getState();
     if (!isPlaying || isGameOver) return;
 
-    // Chase the player using shared position
-    const target = playerPosition;
+    const target = playerWorldPos;
     const dir = new THREE.Vector3(
       target.x - meshRef.current.position.x,
       0,
@@ -243,7 +485,6 @@ function Enemy({ id, position, isHit }: { id: string; position: [number, number,
       meshRef.current.lookAt(target.x, meshRef.current.position.y, target.z);
     }
 
-    // Walking bob animation
     bobPhase.current += delta * 6;
     meshRef.current.position.y = Math.abs(Math.sin(bobPhase.current)) * 0.05;
   });
@@ -341,7 +582,7 @@ function EnemyAI() {
 
     enemies.forEach((enemy) => {
       const enemyPos = new THREE.Vector3(...enemy.position);
-      const dist = enemyPos.distanceTo(playerPosition);
+      const dist = enemyPos.distanceTo(playerWorldPos);
       if (dist < 2.5) {
         const last = lastDamage.current[enemy.id] || 0;
         if (now - last > 1000) {
@@ -359,7 +600,7 @@ function EnemyAI() {
 function Lighting() {
   return (
     <>
-      <ambientLight intensity={0.3} />
+      <ambientLight intensity={0.35} />
       <directionalLight
         position={[10, 15, 10]}
         intensity={0.8}
@@ -374,71 +615,19 @@ function Lighting() {
   );
 }
 
-// ============ GUN MODEL ============
-function GunModel() {
-  const { isReloading } = useGameStore();
-  const gunRef = useRef<THREE.Group>(null);
-  const recoilRef = useRef(0);
-
-  useFrame(() => {
-    if (!gunRef.current) return;
-    if (recoilRef.current > 0) {
-      recoilRef.current *= 0.85;
-      if (recoilRef.current < 0.001) recoilRef.current = 0;
-    }
-    gunRef.current.rotation.x = -recoilRef.current * 0.3;
-    gunRef.current.position.z = -0.6 - 0.05 * recoilRef.current;
-  });
-
-  useEffect(() => {
-    const unsub = useGameStore.subscribe((state, prev) => {
-      if (state.ammo < prev.ammo) {
-        recoilRef.current = 1;
-      }
-    });
-    return unsub;
-  }, []);
-
-  const reloadOffset = isReloading ? -0.5 : 0;
-
-  return (
-    <group ref={gunRef} position={[0.3, -0.3 + reloadOffset, -0.6]}>
-      <mesh>
-        <boxGeometry args={[0.06, 0.12, 0.4]} />
-        <meshStandardMaterial color="#222222" metalness={0.8} roughness={0.2} />
-      </mesh>
-      <mesh position={[0, 0.02, -0.25]}>
-        <cylinderGeometry args={[0.015, 0.02, 0.2, 8]} />
-        <meshStandardMaterial color="#333333" metalness={0.9} roughness={0.1} />
-      </mesh>
-      <mesh position={[0, -0.12, 0.08]} rotation={[0.3, 0, 0]}>
-        <boxGeometry args={[0.05, 0.15, 0.06]} />
-        <meshStandardMaterial color="#4a3520" roughness={0.9} />
-      </mesh>
-      <mesh position={[0, 0.08, -0.15]}>
-        <boxGeometry args={[0.02, 0.03, 0.02]} />
-        <meshStandardMaterial color="#111111" />
-      </mesh>
-      <mesh position={[0, -0.12, -0.05]}>
-        <boxGeometry args={[0.04, 0.12, 0.06]} />
-        <meshStandardMaterial color="#1a1a1a" metalness={0.7} roughness={0.3} />
-      </mesh>
-    </group>
-  );
-}
-
 // ============ MAIN SCENE ============
 function GameScene() {
   const { enemies } = useGameStore();
 
   return (
     <>
-      <PlayerController />
+      <ThirdPersonCamera />
+      <PlayerCharacter />
       <ShootingSystem />
       <EnemySpawner />
       <EnemyAI />
       <Lighting />
-      <fog attach="fog" args={['#111111', 5, 45]} />
+      <fog attach="fog" args={['#111111', 8, 50]} />
       <Floor />
       <Ceiling />
       <Walls />
@@ -463,12 +652,12 @@ function HUD() {
     <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 10 }}>
       {/* Crosshair */}
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">
-        <div className="relative w-6 h-6">
-          <div className={`absolute top-0 left-1/2 -translate-x-1/2 w-0.5 h-2 ${crosshairHit ? 'bg-red-500' : 'bg-white'}`} />
-          <div className={`absolute bottom-0 left-1/2 -translate-x-1/2 w-0.5 h-2 ${crosshairHit ? 'bg-red-500' : 'bg-white'}`} />
-          <div className={`absolute left-0 top-1/2 -translate-y-1/2 h-0.5 w-2 ${crosshairHit ? 'bg-red-500' : 'bg-white'}`} />
-          <div className={`absolute right-0 top-1/2 -translate-y-1/2 h-0.5 w-2 ${crosshairHit ? 'bg-red-500' : 'bg-white'}`} />
-          <div className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-1 h-1 rounded-full ${crosshairHit ? 'bg-red-500' : 'bg-red-400'}`} />
+        <div className="relative w-8 h-8">
+          <div className={`absolute top-0 left-1/2 -translate-x-1/2 w-0.5 h-3 ${crosshairHit ? 'bg-red-500' : 'bg-white/80'}`} />
+          <div className={`absolute bottom-0 left-1/2 -translate-x-1/2 w-0.5 h-3 ${crosshairHit ? 'bg-red-500' : 'bg-white/80'}`} />
+          <div className={`absolute left-0 top-1/2 -translate-y-1/2 h-0.5 w-3 ${crosshairHit ? 'bg-red-500' : 'bg-white/80'}`} />
+          <div className={`absolute right-0 top-1/2 -translate-y-1/2 h-0.5 w-3 ${crosshairHit ? 'bg-red-500' : 'bg-white/80'}`} />
+          <div className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-1.5 h-1.5 rounded-full border-2 ${crosshairHit ? 'border-red-500 bg-red-500/50' : 'border-white/60 bg-transparent'}`} />
         </div>
       </div>
 
@@ -547,17 +736,17 @@ function StartScreen({ onStart }: { onStart: () => void }) {
     <div className="absolute inset-0 bg-black/80 flex items-center justify-center z-20">
       <div className="text-center max-w-md px-6">
         <h1 className="text-5xl font-bold text-white mb-2 tracking-tight">
-          FPS <span className="text-red-500">ARENA</span>
+          TPS <span className="text-red-500">ARENA</span>
         </h1>
-        <p className="text-gray-400 mb-8">3D First Person Shooter</p>
+        <p className="text-gray-400 mb-8">3D Third Person Shooter</p>
 
         <div className="bg-white/5 rounded-lg p-4 mb-8 border border-white/10 text-left">
           <h3 className="text-white font-semibold mb-3 text-sm uppercase tracking-wider">Controls</h3>
           <div className="grid grid-cols-2 gap-2 text-sm">
             <div className="text-gray-400">Move</div>
             <div className="text-white font-mono">W A S D</div>
-            <div className="text-gray-400">Look</div>
-            <div className="text-white font-mono">Mouse</div>
+            <div className="text-gray-400">Camera</div>
+            <div className="text-white font-mono">Right Drag</div>
             <div className="text-gray-400">Shoot</div>
             <div className="text-white font-mono">Left Click</div>
             <div className="text-gray-400">Reload</div>
@@ -571,14 +760,14 @@ function StartScreen({ onStart }: { onStart: () => void }) {
         >
           CLICK TO START
         </button>
-        <p className="text-gray-600 text-xs mt-4">Click to lock mouse cursor</p>
+        <p className="text-gray-600 text-xs mt-4">Right-drag to rotate camera</p>
       </div>
     </div>
   );
 }
 
 // ============ EXPORTED COMPONENT ============
-export default function FPSGame() {
+export default function TPSGame() {
   const [started, setStarted] = useState(false);
   const { startGame, resetGame, isPlaying, isGameOver } = useGameStore();
 
@@ -589,14 +778,13 @@ export default function FPSGame() {
   }, [startGame, resetGame]);
 
   return (
-    <div className="w-screen h-screen relative overflow-hidden bg-black">
+    <div className="w-screen h-screen relative overflow-hidden bg-black" onContextMenu={(e) => e.preventDefault()}>
       <Canvas
-        camera={{ fov: 75, near: 0.1, far: 100, position: [0, 1.7, 0] }}
+        camera={{ fov: 60, near: 0.1, far: 100, position: [0, 4, 8] }}
         shadows
         gl={{ antialias: true }}
       >
         <GameScene />
-        {started && isPlaying && <GunModel />}
       </Canvas>
       <HUD />
       {!started && <StartScreen onStart={handleStart} />}
