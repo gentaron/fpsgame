@@ -2,28 +2,31 @@
 
 import { useRef, useEffect, useCallback, useState, useMemo } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import { useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { useGameStore } from '@/store/game-store';
 
-// Shared player world position (set by PlayerController, read by enemies)
+// Shared player world position
 const playerWorldPos = new THREE.Vector3(0, 0, 0);
-// Shared player rotation Y
 let playerRotY = 0;
+let playerFacingAngle = 0;
+
+// ============ PRELOAD GLB ============
+useGLTF.preload('/yuma.glb');
 
 // ============ THIRD-PERSON CAMERA ============
 function ThirdPersonCamera() {
   const { camera, gl } = useThree();
   const mouseDown = useRef(false);
   const prevMouse = useRef({ x: 0, y: 0 });
-  const yaw = useRef(0);   // horizontal orbit angle
-  const pitch = useRef(0.3); // vertical orbit angle (slightly above)
-  const CAMERA_DISTANCE = 6;
-  const CAMERA_HEIGHT = 3;
+  const yaw = useRef(0);
+  const pitch = useRef(0.3);
+  const CAMERA_DISTANCE = 7;
+  const CAMERA_HEIGHT = 3.5;
   const SENSITIVITY = 0.003;
 
   useEffect(() => {
     const canvas = gl.domElement;
-
     const onMouseDown = (e: MouseEvent) => {
       if (e.button === 0 || e.button === 2) {
         mouseDown.current = true;
@@ -57,16 +60,12 @@ function ThirdPersonCamera() {
   useFrame(() => {
     const px = playerWorldPos.x;
     const pz = playerWorldPos.z;
-
-    // Camera orbits behind the player based on yaw
     const camX = px + Math.sin(yaw.current) * CAMERA_DISTANCE;
     const camZ = pz + Math.cos(yaw.current) * CAMERA_DISTANCE;
     const camY = CAMERA_HEIGHT + pitch.current * 3;
 
     camera.position.lerp(new THREE.Vector3(camX, camY, camZ), 0.15);
     camera.lookAt(px, 1.2, pz);
-
-    // Player faces the direction the camera is looking
     playerRotY = yaw.current;
   });
 
@@ -83,7 +82,6 @@ function PlayerCharacter() {
   const leftLegRef = useRef<THREE.Group>(null);
   const rightLegRef = useRef<THREE.Group>(null);
   const walkPhase = useRef(0);
-
   const SPEED = 10;
   const FRICTION = 8;
 
@@ -95,6 +93,8 @@ function PlayerCharacter() {
         case 'KeyA': case 'ArrowLeft': moveState.current.left = true; break;
         case 'KeyD': case 'ArrowRight': moveState.current.right = true; break;
         case 'KeyR': useGameStore.getState().reload(); break;
+        case 'Space': e.preventDefault(); useGameStore.getState().meleeAttack(); break;
+        case 'KeyG': useGameStore.getState().throwGrenade(); break;
       }
     };
     const onKeyUp = (e: KeyboardEvent) => {
@@ -128,7 +128,6 @@ function PlayerCharacter() {
     const isMoving = dir.lengthSq() > 0;
     if (isMoving) dir.normalize();
 
-    // Rotate movement direction by camera yaw (playerRotY)
     const euler = new THREE.Euler(0, playerRotY, 0, 'YXZ');
     dir.applyEuler(euler);
 
@@ -143,17 +142,15 @@ function PlayerCharacter() {
     groupRef.current.position.z = Math.max(-24, Math.min(24, groupRef.current.position.z));
     groupRef.current.position.y = 0;
 
-    // Face movement direction (smooth rotation)
     if (isMoving) {
       const targetRot = Math.atan2(velocity.current.x, velocity.current.z);
-      let currentRot = groupRef.current.rotation.y;
-      let diff = targetRot - currentRot;
+      playerFacingAngle = targetRot;
+      let diff = targetRot - groupRef.current.rotation.y;
       while (diff > Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
       groupRef.current.rotation.y += diff * 0.15;
     }
 
-    // Walking animation
     if (isMoving) {
       walkPhase.current += dt * 10;
       const swing = Math.sin(walkPhase.current) * 0.5;
@@ -162,40 +159,33 @@ function PlayerCharacter() {
       if (leftArmRef.current) leftArmRef.current.rotation.x = -swing * 0.6;
       if (rightArmRef.current) rightArmRef.current.rotation.x = swing * 0.6;
     } else {
-      // Idle breathing
       if (leftArmRef.current) leftArmRef.current.rotation.x *= 0.9;
       if (rightArmRef.current) rightArmRef.current.rotation.x *= 0.9;
       if (leftLegRef.current) leftLegRef.current.rotation.x *= 0.9;
       if (rightLegRef.current) rightLegRef.current.rotation.x *= 0.9;
     }
 
-    // Update shared position
     playerWorldPos.copy(groupRef.current.position);
   });
 
   return (
     <group ref={groupRef} position={[0, 0, 0]}>
-      {/* Body / Torso */}
       <mesh position={[0, 1.15, 0]} castShadow>
         <boxGeometry args={[0.7, 0.9, 0.4]} />
         <meshStandardMaterial color="#3366aa" />
       </mesh>
-      {/* Belt / Waist */}
       <mesh position={[0, 0.72, 0]} castShadow>
         <boxGeometry args={[0.72, 0.15, 0.42]} />
         <meshStandardMaterial color="#333333" />
       </mesh>
-      {/* Head */}
       <mesh position={[0, 1.85, 0]} castShadow>
         <boxGeometry args={[0.4, 0.45, 0.4]} />
         <meshStandardMaterial color="#eebb88" />
       </mesh>
-      {/* Helmet/Hat */}
       <mesh position={[0, 2.12, 0]} castShadow>
         <boxGeometry args={[0.46, 0.15, 0.46]} />
         <meshStandardMaterial color="#225522" />
       </mesh>
-      {/* Eyes */}
       <mesh position={[-0.08, 1.88, 0.2]}>
         <boxGeometry args={[0.08, 0.06, 0.02]} />
         <meshStandardMaterial color="#222222" />
@@ -204,58 +194,234 @@ function PlayerCharacter() {
         <boxGeometry args={[0.08, 0.06, 0.02]} />
         <meshStandardMaterial color="#222222" />
       </mesh>
-      {/* Left Arm (pivot at shoulder) */}
       <group position={[-0.52, 1.45, 0]} ref={leftArmRef}>
         <mesh position={[0, -0.35, 0]} castShadow>
           <boxGeometry args={[0.22, 0.7, 0.22]} />
           <meshStandardMaterial color="#3366aa" />
         </mesh>
-        {/* Left Hand */}
         <mesh position={[0, -0.72, 0]}>
           <boxGeometry args={[0.16, 0.12, 0.16]} />
           <meshStandardMaterial color="#eebb88" />
         </mesh>
+        {/* Sword on left arm */}
+        <MeleeWeapon />
       </group>
-      {/* Right Arm (pivot at shoulder) - holds gun */}
       <group position={[0.52, 1.45, 0]} ref={rightArmRef}>
         <mesh position={[0, -0.35, 0]} castShadow>
           <boxGeometry args={[0.22, 0.7, 0.22]} />
           <meshStandardMaterial color="#3366aa" />
         </mesh>
-        {/* Right Hand */}
         <mesh position={[0, -0.72, 0]}>
           <boxGeometry args={[0.16, 0.12, 0.16]} />
           <meshStandardMaterial color="#eebb88" />
         </mesh>
-        {/* Gun attached to right hand */}
         <TPSGun />
       </group>
-      {/* Left Leg (pivot at hip) */}
       <group position={[-0.18, 0.65, 0]} ref={leftLegRef}>
         <mesh position={[0, -0.3, 0]} castShadow>
           <boxGeometry args={[0.28, 0.6, 0.28]} />
           <meshStandardMaterial color="#444466" />
         </mesh>
-        {/* Shoe */}
         <mesh position={[0, -0.63, 0.03]}>
           <boxGeometry args={[0.28, 0.12, 0.35]} />
           <meshStandardMaterial color="#222222" />
         </mesh>
       </group>
-      {/* Right Leg (pivot at hip) */}
       <group position={[0.18, 0.65, 0]} ref={rightLegRef}>
         <mesh position={[0, -0.3, 0]} castShadow>
           <boxGeometry args={[0.28, 0.6, 0.28]} />
           <meshStandardMaterial color="#444466" />
         </mesh>
-        {/* Shoe */}
         <mesh position={[0, -0.63, 0.03]}>
           <boxGeometry args={[0.28, 0.12, 0.35]} />
           <meshStandardMaterial color="#222222" />
         </mesh>
       </group>
+      {/* Melee slash effect */}
+      <MeleeSlashEffect />
     </group>
   );
+}
+
+// ============ MELEE WEAPON (sword on left arm) ============
+function MeleeWeapon() {
+  return (
+    <group position={[0, -0.75, -0.15]}>
+      {/* Blade */}
+      <mesh rotation={[0, 0, 0.2]} castShadow>
+        <boxGeometry args={[0.04, 0.6, 0.08]} />
+        <meshStandardMaterial color="#cccccc" metalness={0.9} roughness={0.1} />
+      </mesh>
+      {/* Guard */}
+      <mesh position={[0, 0.32, 0]}>
+        <boxGeometry args={[0.15, 0.04, 0.04]} />
+        <meshStandardMaterial color="#ccaa44" metalness={0.8} roughness={0.2} />
+      </mesh>
+      {/* Handle */}
+      <mesh position={[0, 0.4, 0]}>
+        <boxGeometry args={[0.05, 0.15, 0.05]} />
+        <meshStandardMaterial color="#5a3a1a" roughness={0.9} />
+      </mesh>
+    </group>
+  );
+}
+
+// ============ MELEE SLASH VISUAL EFFECT ============
+function MeleeSlashEffect() {
+  const { isMeleeAttacking } = useGameStore();
+  const slashRef = useRef<THREE.Group>(null);
+  const phase = useRef(0);
+
+  useFrame((_, delta) => {
+    if (!slashRef.current) return;
+    if (isMeleeAttacking) {
+      phase.current += delta * 12;
+      slashRef.current.rotation.y = -1.5 + phase.current * 2.5;
+      slashRef.current.visible = true;
+    } else {
+      phase.current = 0;
+      slashRef.current.visible = false;
+    }
+  });
+
+  return (
+    <group ref={slashRef} position={[0, 1.0, -0.8]} visible={false}>
+      <mesh>
+        <torusGeometry args={[1.2, 0.03, 4, 20, Math.PI * 0.7]} />
+        <meshStandardMaterial color="#88ddff" emissive="#44aaff" emissiveIntensity={2} transparent opacity={0.8} />
+      </mesh>
+      <mesh>
+        <torusGeometry args={[1.0, 0.02, 4, 20, Math.PI * 0.7]} />
+        <meshStandardMaterial color="#aaddff" emissive="#66bbff" emissiveIntensity={3} transparent opacity={0.6} />
+      </mesh>
+    </group>
+  );
+}
+
+// ============ MELEE ATTACK SYSTEM ============
+function MeleeAttackSystem() {
+  const { enemies, hitEnemy, removeEnemy, meleeAttack, isMeleeAttacking } = useGameStore();
+  const hasProcessed = useRef(false);
+
+  useFrame(() => {
+    if (isMeleeAttacking && !hasProcessed.current) {
+      hasProcessed.current = true;
+      // Area damage: hit all enemies within 3 units of player
+      const hitIds: string[] = [];
+      enemies.forEach((enemy) => {
+        const ePos = new THREE.Vector3(...enemy.position);
+        const dist = ePos.distanceTo(playerWorldPos);
+        if (dist < 3.0) {
+          hitEnemy(enemy.id);
+          hitIds.push(enemy.id);
+        }
+      });
+      // Remove hit enemies after delay
+      setTimeout(() => {
+        hitIds.forEach((id) => removeEnemy(id));
+      }, 150);
+    }
+    if (!isMeleeAttacking) {
+      hasProcessed.current = false;
+    }
+  });
+
+  return null;
+}
+
+// ============ GRENADE SYSTEM ============
+function GrenadeSystem() {
+  const { camera, scene } = useThree();
+  const { throwGrenade, grenadeCount, hitEnemy, removeEnemy, enemies } = useGameStore();
+  const grenades = useRef<{ mesh: THREE.Mesh; velocity: THREE.Vector3; timer: number; pos: THREE.Vector3 }[]>([]);
+  const explosions = useRef<{ light: THREE.PointLight; timer: number }[]>([]);
+
+  useFrame((_, delta) => {
+    const dt = Math.min(delta, 0.1);
+
+    // Subscribe to grenade throws
+    const state = useGameStore.getState();
+
+    // Update grenades
+    for (let i = grenades.current.length - 1; i >= 0; i--) {
+      const g = grenades.current[i];
+      g.velocity.y -= 15 * dt; // gravity
+      g.pos.add(g.velocity.clone().multiplyScalar(dt));
+      g.mesh.position.copy(g.pos);
+      g.timer -= dt;
+
+      if (g.timer <= 0 || g.pos.y < 0) {
+        // Explode
+        scene.remove(g.mesh);
+        grenades.current.splice(i, 1);
+
+        // Create explosion
+        const light = new THREE.PointLight('#ff6600', 20, 12);
+        light.position.copy(g.pos);
+        light.position.y = Math.max(0.5, g.pos.y);
+        scene.add(light);
+        explosions.current.push({ light, timer: 0.3 });
+
+        // Damage enemies within 5 units
+        const hitIds: string[] = [];
+        enemies.forEach((enemy) => {
+          const ePos = new THREE.Vector3(...enemy.position);
+          const dist = ePos.distanceTo(g.pos);
+          if (dist < 5.0) {
+            hitEnemy(enemy.id);
+            hitIds.push(enemy.id);
+          }
+        });
+        setTimeout(() => {
+          hitIds.forEach((id) => removeEnemy(id));
+        }, 150);
+      }
+    }
+
+    // Update explosions
+    for (let i = explosions.current.length - 1; i >= 0; i--) {
+      const ex = explosions.current[i];
+      ex.timer -= dt;
+      ex.light.intensity = Math.max(0, ex.timer / 0.3) * 20;
+      if (ex.timer <= 0) {
+        scene.remove(ex.light);
+        explosions.current.splice(i, 1);
+      }
+    }
+  });
+
+  useEffect(() => {
+    let prevCount = grenadeCount;
+    const unsub = useGameStore.subscribe((s) => {
+      if (s.grenadeCount < prevCount) {
+        // Spawn grenade
+        const geo = new THREE.SphereGeometry(0.12, 8, 8);
+        const mat = new THREE.MeshStandardMaterial({ color: '#446633' });
+        const mesh = new THREE.Mesh(geo, mat);
+        const startPos = playerWorldPos.clone();
+        startPos.y = 1.5;
+        mesh.position.copy(startPos);
+        scene.add(mesh);
+
+        // Calculate throw direction (camera forward)
+        const dir = new THREE.Vector3(0, 0, -1);
+        dir.applyAxisAngle(new THREE.Vector3(0, 1, 0), playerFacingAngle);
+        dir.y = 0.5;
+        dir.normalize().multiplyScalar(18);
+
+        grenades.current.push({
+          mesh,
+          velocity: dir,
+          timer: 1.5,
+          pos: startPos.clone(),
+        });
+      }
+      prevCount = s.grenadeCount;
+    });
+    return unsub;
+  }, [scene, grenadeCount, hitEnemy, removeEnemy, enemies]);
+
+  return null;
 }
 
 // ============ THIRD-PERSON GUN MODEL ============
@@ -287,27 +453,22 @@ function TPSGun() {
 
   return (
     <group ref={gunRef} position={[0, -0.6 + reloadOffset, -0.15]}>
-      {/* Gun body */}
       <mesh castShadow>
         <boxGeometry args={[0.08, 0.1, 0.45]} />
         <meshStandardMaterial color="#222222" metalness={0.8} roughness={0.2} />
       </mesh>
-      {/* Barrel */}
       <mesh position={[0, 0.02, -0.3]} castShadow>
         <cylinderGeometry args={[0.02, 0.025, 0.22, 8]} />
         <meshStandardMaterial color="#333333" metalness={0.9} roughness={0.1} />
       </mesh>
-      {/* Handle */}
       <mesh position={[0, -0.1, 0.08]} rotation={[0.3, 0, 0]}>
         <boxGeometry args={[0.06, 0.16, 0.07]} />
         <meshStandardMaterial color="#4a3520" roughness={0.9} />
       </mesh>
-      {/* Magazine */}
       <mesh position={[0, -0.1, -0.04]}>
         <boxGeometry args={[0.05, 0.14, 0.07]} />
         <meshStandardMaterial color="#1a1a1a" metalness={0.7} roughness={0.3} />
       </mesh>
-      {/* Sight */}
       <mesh position={[0, 0.07, -0.18]}>
         <boxGeometry args={[0.02, 0.04, 0.02]} />
         <meshStandardMaterial color="#111111" />
@@ -335,7 +496,6 @@ function ShootingSystem() {
 
   useEffect(() => {
     const onClick = (e: MouseEvent) => {
-      // Only shoot on left click
       if (e.button !== 0) return;
       const state = useGameStore.getState();
       if (!state.isPlaying) return;
@@ -345,7 +505,6 @@ function ShootingSystem() {
       }
       shoot();
 
-      // Muzzle flash at gun tip (near player)
       if (muzzleRef.current) {
         muzzleRef.current.position.copy(playerWorldPos);
         muzzleRef.current.position.y = 1.0;
@@ -353,7 +512,6 @@ function ShootingSystem() {
         muzzleTimer.current = 0.05;
       }
 
-      // Raycast from camera center (crosshair)
       raycaster.current.setFromCamera(new THREE.Vector2(0, 0), camera);
       const enemyMeshes: THREE.Object3D[] = [];
       scene.traverse((child) => {
@@ -379,16 +537,16 @@ function ShootingSystem() {
   return <pointLight ref={muzzleRef} intensity={0} distance={8} color="#ffaa00" />;
 }
 
-// ============ ENVIRONMENT ============
+// ============ ENVIRONMENT (BRIGHTER) ============
 function Floor() {
   const texture = useMemo(() => {
     const canvas = document.createElement('canvas');
     canvas.width = 256;
     canvas.height = 256;
     const ctx = canvas.getContext('2d')!;
-    ctx.fillStyle = '#2a2a2a';
+    ctx.fillStyle = '#5a5a5a';
     ctx.fillRect(0, 0, 256, 256);
-    ctx.strokeStyle = '#333333';
+    ctx.strokeStyle = '#666666';
     ctx.lineWidth = 1;
     for (let i = 0; i <= 256; i += 32) {
       ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, 256); ctx.stroke();
@@ -403,7 +561,7 @@ function Floor() {
   return (
     <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0, 0]} receiveShadow>
       <planeGeometry args={[50, 50]} />
-      <meshStandardMaterial map={texture} roughness={0.8} />
+      <meshStandardMaterial map={texture} roughness={0.7} />
     </mesh>
   );
 }
@@ -412,25 +570,24 @@ function Ceiling() {
   return (
     <mesh rotation={[Math.PI / 2, 0, 0]} position={[0, 6, 0]}>
       <planeGeometry args={[50, 50]} />
-      <meshStandardMaterial color="#1a1a1a" />
+      <meshStandardMaterial color="#3a3a3a" />
     </mesh>
   );
 }
 
 function Walls() {
-  const wallColor = '#3a3a3a';
   const wallData = [
-    { pos: [0, 3, -25] as [number, number, number], rot: [0, 0, 0] as [number, number, number] },
-    { pos: [0, 3, 25] as [number, number, number], rot: [0, Math.PI, 0] as [number, number, number] },
-    { pos: [-25, 3, 0] as [number, number, number], rot: [0, Math.PI / 2, 0] as [number, number, number] },
-    { pos: [25, 3, 0] as [number, number, number], rot: [0, -Math.PI / 2, 0] as [number, number, number] },
+    { pos: [0, 3, -25] as [number, number, number], rot: [0, 0, 0] as [number, number, number], color: '#5a5a5a' },
+    { pos: [0, 3, 25] as [number, number, number], rot: [0, Math.PI, 0] as [number, number, number], color: '#5a5a5a' },
+    { pos: [-25, 3, 0] as [number, number, number], rot: [0, Math.PI / 2, 0] as [number, number, number], color: '#505050' },
+    { pos: [25, 3, 0] as [number, number, number], rot: [0, -Math.PI / 2, 0] as [number, number, number], color: '#505050' },
   ];
   return (
     <>
       {wallData.map((w, i) => (
         <mesh key={i} position={w.pos} rotation={w.rot} receiveShadow>
           <planeGeometry args={[50, 6]} />
-          <meshStandardMaterial color={wallColor} />
+          <meshStandardMaterial color={w.color} />
         </mesh>
       ))}
     </>
@@ -439,14 +596,14 @@ function Walls() {
 
 function Obstacles() {
   const obstacles = [
-    { pos: [5, 1.5, -8] as [number, number, number], size: [2, 3, 2] as [number, number, number], color: '#555555' },
-    { pos: [-7, 1.5, -12] as [number, number, number], size: [3, 3, 1.5] as [number, number, number], color: '#664444' },
-    { pos: [10, 1.5, 5] as [number, number, number], size: [1.5, 3, 4] as [number, number, number], color: '#445566' },
-    { pos: [-12, 1.5, 8] as [number, number, number], size: [4, 3, 1.5] as [number, number, number], color: '#556644' },
-    { pos: [0, 1.5, -15] as [number, number, number], size: [6, 3, 1] as [number, number, number], color: '#664455' },
-    { pos: [-5, 1.5, 15] as [number, number, number], size: [2, 3, 2] as [number, number, number], color: '#555555' },
-    { pos: [15, 1.5, -15] as [number, number, number], size: [2, 3, 3] as [number, number, number], color: '#445544' },
-    { pos: [-15, 1.5, -5] as [number, number, number], size: [3, 3, 2] as [number, number, number], color: '#554455' },
+    { pos: [5, 1.5, -8] as [number, number, number], size: [2, 3, 2] as [number, number, number], color: '#777777' },
+    { pos: [-7, 1.5, -12] as [number, number, number], size: [3, 3, 1.5] as [number, number, number], color: '#886666' },
+    { pos: [10, 1.5, 5] as [number, number, number], size: [1.5, 3, 4] as [number, number, number], color: '#667788' },
+    { pos: [-12, 1.5, 8] as [number, number, number], size: [4, 3, 1.5] as [number, number, number], color: '#778866' },
+    { pos: [0, 1.5, -15] as [number, number, number], size: [6, 3, 1] as [number, number, number], color: '#886677' },
+    { pos: [-5, 1.5, 15] as [number, number, number], size: [2, 3, 2] as [number, number, number], color: '#777777' },
+    { pos: [15, 1.5, -15] as [number, number, number], size: [2, 3, 3] as [number, number, number], color: '#668866' },
+    { pos: [-15, 1.5, -5] as [number, number, number], size: [3, 3, 2] as [number, number, number], color: '#776688' },
   ];
   return (
     <>
@@ -460,71 +617,78 @@ function Obstacles() {
   );
 }
 
-// ============ ENEMIES ============
+// ============ ENEMIES (yuma.glb) ============
+function EnemyModel({ url, isHit }: { url: string; isHit: boolean }) {
+  const { scene } = useGLTF(url);
+  const cloned = useMemo(() => {
+    const clone = scene.clone(true);
+    // Tag all meshes for raycasting
+    clone.traverse((child) => {
+      if ((child as THREE.Mesh).isMesh) {
+        (child as THREE.Mesh).castShadow = true;
+      }
+    });
+    return clone;
+  }, [scene]);
+
+  return <primitive object={cloned} />;
+}
+
 function Enemy({ id, position, isHit }: { id: string; position: [number, number, number]; isHit: boolean }) {
-  const meshRef = useRef<THREE.Group>(null);
+  const groupRef = useRef<THREE.Group>(null);
   const bobPhase = useRef(Math.random() * Math.PI * 2);
+  const modelScale = 1.0;
 
   useFrame((_, delta) => {
-    if (!meshRef.current) return;
+    if (!groupRef.current) return;
     const { isPlaying, isGameOver } = useGameStore.getState();
     if (!isPlaying || isGameOver) return;
 
     const target = playerWorldPos;
     const dir = new THREE.Vector3(
-      target.x - meshRef.current.position.x,
+      target.x - groupRef.current.position.x,
       0,
-      target.z - meshRef.current.position.z
+      target.z - groupRef.current.position.z
     );
     const dist = dir.length();
     if (dist > 2) {
       dir.normalize();
       const speed = 2.5;
-      meshRef.current.position.x += dir.x * speed * delta;
-      meshRef.current.position.z += dir.z * speed * delta;
-      meshRef.current.lookAt(target.x, meshRef.current.position.y, target.z);
+      groupRef.current.position.x += dir.x * speed * delta;
+      groupRef.current.position.z += dir.z * speed * delta;
+      groupRef.current.lookAt(target.x, groupRef.current.position.y, target.z);
     }
 
+    // Walking bob
     bobPhase.current += delta * 6;
-    meshRef.current.position.y = Math.abs(Math.sin(bobPhase.current)) * 0.05;
+    groupRef.current.position.y = Math.abs(Math.sin(bobPhase.current)) * 0.08;
+
+    // Flash red on hit
+    if (isHit) {
+      groupRef.current.traverse((child) => {
+        if ((child as THREE.Mesh).isMesh && (child as THREE.Mesh).material) {
+          const mat = (child as THREE.Mesh).material as THREE.MeshStandardMaterial;
+          mat.emissive = new THREE.Color('#ff0000');
+          mat.emissiveIntensity = 0.8;
+        }
+      });
+    } else {
+      groupRef.current.traverse((child) => {
+        if ((child as THREE.Mesh).isMesh && (child as THREE.Mesh).material) {
+          const mat = (child as THREE.Mesh).material as THREE.MeshStandardMaterial;
+          if (mat.emissiveIntensity > 0) {
+            mat.emissiveIntensity = 0;
+          }
+        }
+      });
+    }
   });
 
-  const bodyColor = isHit ? '#ff0000' : '#cc3333';
-
   return (
-    <group ref={meshRef} position={position} userData={{ enemyId: id }}>
-      <mesh position={[0, 0.9, 0]} castShadow userData={{ enemyId: id }}>
-        <boxGeometry args={[0.8, 1.4, 0.5]} />
-        <meshStandardMaterial color={bodyColor} />
-      </mesh>
-      <mesh position={[0, 1.85, 0]} castShadow userData={{ enemyId: id }}>
-        <sphereGeometry args={[0.3, 16, 16]} />
-        <meshStandardMaterial color={isHit ? '#ff4444' : '#ddaa88'} />
-      </mesh>
-      <mesh position={[-0.1, 1.9, 0.25]} userData={{ enemyId: id }}>
-        <sphereGeometry args={[0.06, 8, 8]} />
-        <meshStandardMaterial color="#ff0000" emissive="#ff0000" emissiveIntensity={0.5} />
-      </mesh>
-      <mesh position={[0.1, 1.9, 0.25]} userData={{ enemyId: id }}>
-        <sphereGeometry args={[0.06, 8, 8]} />
-        <meshStandardMaterial color="#ff0000" emissive="#ff0000" emissiveIntensity={0.5} />
-      </mesh>
-      <mesh position={[-0.6, 0.9, 0]} castShadow userData={{ enemyId: id }}>
-        <boxGeometry args={[0.25, 1, 0.25]} />
-        <meshStandardMaterial color={bodyColor} />
-      </mesh>
-      <mesh position={[0.6, 0.9, 0]} castShadow userData={{ enemyId: id }}>
-        <boxGeometry args={[0.25, 1, 0.25]} />
-        <meshStandardMaterial color={bodyColor} />
-      </mesh>
-      <mesh position={[-0.2, 0.15, 0]} castShadow userData={{ enemyId: id }}>
-        <boxGeometry args={[0.3, 0.6, 0.3]} />
-        <meshStandardMaterial color={isHit ? '#aa0000' : '#333366'} />
-      </mesh>
-      <mesh position={[0.2, 0.15, 0]} castShadow userData={{ enemyId: id }}>
-        <boxGeometry args={[0.3, 0.6, 0.3]} />
-        <meshStandardMaterial color={isHit ? '#aa0000' : '#333366'} />
-      </mesh>
+    <group ref={groupRef} position={position} userData={{ enemyId: id }}>
+      <group scale={[modelScale, modelScale, modelScale]}>
+        <EnemyModel url="/yuma.glb" isHit={isHit} />
+      </group>
     </group>
   );
 }
@@ -551,6 +715,8 @@ function EnemySpawner() {
       spawnedCount.current = 0;
       waveEnemyCount.current = 5 + wave * 2;
       lastSpawn.current = now;
+      // Replenish grenades on new wave
+      useGameStore.setState({ grenadeCount: useGameStore.getState().maxGrenades });
       return;
     }
 
@@ -571,7 +737,7 @@ function EnemySpawner() {
   return null;
 }
 
-// ============ ENEMY AI - damage player on proximity ============
+// ============ ENEMY AI ============
 function EnemyAI() {
   const { enemies, damagePlayer, isPlaying, isGameOver } = useGameStore();
   const lastDamage = useRef<Record<string, number>>({});
@@ -596,21 +762,24 @@ function EnemyAI() {
   return null;
 }
 
-// ============ LIGHTING ============
+// ============ LIGHTING (BRIGHTER) ============
 function Lighting() {
   return (
     <>
-      <ambientLight intensity={0.35} />
+      <ambientLight intensity={0.7} />
+      <hemisphereLight args={['#b1e1ff', '#b97a20', 0.5]} />
       <directionalLight
         position={[10, 15, 10]}
-        intensity={0.8}
+        intensity={1.5}
         castShadow
         shadow-mapSize-width={1024}
         shadow-mapSize-height={1024}
       />
-      <pointLight position={[0, 5, 0]} intensity={0.5} color="#aaccff" />
-      <pointLight position={[-15, 4, -15]} intensity={0.3} color="#ffaa88" />
-      <pointLight position={[15, 4, 15]} intensity={0.3} color="#88aaff" />
+      <pointLight position={[0, 5, 0]} intensity={1.0} color="#ffffff" />
+      <pointLight position={[-15, 4, -15]} intensity={0.6} color="#ffcc88" />
+      <pointLight position={[15, 4, 15]} intensity={0.6} color="#88ccff" />
+      <pointLight position={[0, 4, -20]} intensity={0.4} color="#ffaaaa" />
+      <pointLight position={[0, 4, 20]} intensity={0.4} color="#aaffaa" />
     </>
   );
 }
@@ -624,10 +793,12 @@ function GameScene() {
       <ThirdPersonCamera />
       <PlayerCharacter />
       <ShootingSystem />
+      <MeleeAttackSystem />
+      <GrenadeSystem />
       <EnemySpawner />
       <EnemyAI />
       <Lighting />
-      <fog attach="fog" args={['#111111', 8, 50]} />
+      <fog attach="fog" args={['#667788', 15, 55]} />
       <Floor />
       <Ceiling />
       <Walls />
@@ -641,7 +812,11 @@ function GameScene() {
 
 // ============ HUD OVERLAY ============
 function HUD() {
-  const { score, ammo, maxAmmo, health, maxHealth, kills, wave, isReloading, crosshairHit, isPlaying, isGameOver } = useGameStore();
+  const {
+    score, ammo, maxAmmo, health, maxHealth, kills, wave,
+    isReloading, crosshairHit, isPlaying, isGameOver,
+    meleeCooldown, grenadeCount, maxGrenades,
+  } = useGameStore();
 
   if (!isPlaying && !isGameOver) return null;
 
@@ -663,66 +838,74 @@ function HUD() {
 
       {/* Top bar */}
       <div className="absolute top-4 left-4 right-4 flex justify-between items-start">
-        <div className="bg-black/60 backdrop-blur-sm rounded-lg px-4 py-2 border border-white/10">
-          <div className="text-xs text-gray-400 uppercase tracking-wider">Score</div>
+        <div className="bg-black/50 backdrop-blur-sm rounded-lg px-4 py-2 border border-white/10">
+          <div className="text-xs text-gray-300 uppercase tracking-wider">Score</div>
           <div className="text-2xl font-bold text-white font-mono">{score}</div>
         </div>
-        <div className="bg-black/60 backdrop-blur-sm rounded-lg px-4 py-2 border border-white/10 text-center">
-          <div className="text-xs text-gray-400 uppercase tracking-wider">Wave</div>
+        <div className="bg-black/50 backdrop-blur-sm rounded-lg px-4 py-2 border border-white/10 text-center">
+          <div className="text-xs text-gray-300 uppercase tracking-wider">Wave</div>
           <div className="text-2xl font-bold text-yellow-400 font-mono">{wave}</div>
         </div>
-        <div className="bg-black/60 backdrop-blur-sm rounded-lg px-4 py-2 border border-white/10 text-right">
-          <div className="text-xs text-gray-400 uppercase tracking-wider">Kills</div>
+        <div className="bg-black/50 backdrop-blur-sm rounded-lg px-4 py-2 border border-white/10 text-right">
+          <div className="text-xs text-gray-300 uppercase tracking-wider">Kills</div>
           <div className="text-2xl font-bold text-white font-mono">{kills}</div>
         </div>
       </div>
 
       {/* Bottom bar */}
       <div className="absolute bottom-6 left-6 right-6 flex justify-between items-end">
-        <div className="bg-black/60 backdrop-blur-sm rounded-lg px-4 py-3 border border-white/10 min-w-[200px]">
+        {/* Health */}
+        <div className="bg-black/50 backdrop-blur-sm rounded-lg px-4 py-3 border border-white/10 min-w-[200px]">
           <div className="flex items-center gap-2 mb-1">
             <span className="text-red-400 text-sm font-bold">+</span>
-            <span className="text-xs text-gray-400 uppercase tracking-wider">Health</span>
+            <span className="text-xs text-gray-300 uppercase tracking-wider">Health</span>
           </div>
-          <div className="w-full bg-gray-700 rounded-full h-3 overflow-hidden">
-            <div
-              className="h-full rounded-full transition-all duration-300"
-              style={{ width: `${healthPercent}%`, backgroundColor: healthColor }}
-            />
+          <div className="w-full bg-gray-600 rounded-full h-3 overflow-hidden">
+            <div className="h-full rounded-full transition-all duration-300" style={{ width: `${healthPercent}%`, backgroundColor: healthColor }} />
           </div>
-          <div className="text-right text-sm font-mono mt-1" style={{ color: healthColor }}>
-            {health} / {maxHealth}
-          </div>
+          <div className="text-right text-sm font-mono mt-1" style={{ color: healthColor }}>{health} / {maxHealth}</div>
         </div>
-        <div className="bg-black/60 backdrop-blur-sm rounded-lg px-6 py-3 border border-white/10 text-center">
-          {isReloading ? (
-            <div className="text-yellow-400 text-lg font-bold animate-pulse">RELOADING...</div>
-          ) : (
-            <>
-              <div className="text-xs text-gray-400 uppercase tracking-wider mb-1">Ammo</div>
-              <div className={`text-3xl font-bold font-mono ${ammo <= 5 ? 'text-red-400' : 'text-white'}`}>
-                {ammo}
-                <span className="text-gray-500 text-lg"> / {maxAmmo}</span>
-              </div>
-            </>
-          )}
-          <div className="text-[10px] text-gray-500 mt-1">R to reload</div>
+
+        {/* Attack buttons row */}
+        <div className="flex gap-3 items-end">
+          {/* Melee */}
+          <div className={`bg-black/50 backdrop-blur-sm rounded-lg px-3 py-2 border text-center ${meleeCooldown ? 'border-yellow-500/30' : 'border-cyan-400/30'}`}>
+            <div className="text-[10px] text-gray-400 uppercase">Melee</div>
+            <div className={`text-sm font-bold font-mono ${meleeCooldown ? 'text-gray-500' : 'text-cyan-400'}`}>SPACE</div>
+          </div>
+
+          {/* Grenade */}
+          <div className="bg-black/50 backdrop-blur-sm rounded-lg px-3 py-2 border border-orange-400/30 text-center">
+            <div className="text-[10px] text-gray-400 uppercase">Grenade</div>
+            <div className="text-sm font-bold font-mono text-orange-400">G x{grenadeCount}</div>
+          </div>
+
+          {/* Ammo */}
+          <div className="bg-black/50 backdrop-blur-sm rounded-lg px-6 py-3 border border-white/10 text-center">
+            {isReloading ? (
+              <div className="text-yellow-400 text-lg font-bold animate-pulse">RELOADING...</div>
+            ) : (
+              <>
+                <div className="text-xs text-gray-300 uppercase tracking-wider mb-1">Ammo</div>
+                <div className={`text-3xl font-bold font-mono ${ammo <= 5 ? 'text-red-400' : 'text-white'}`}>
+                  {ammo}<span className="text-gray-400 text-lg"> / {maxAmmo}</span>
+                </div>
+              </>
+            )}
+            <div className="text-[10px] text-gray-500 mt-1">R to reload</div>
+          </div>
         </div>
       </div>
 
-      {/* Game Over overlay */}
+      {/* Game Over */}
       {isGameOver && (
         <div className="absolute inset-0 bg-black/70 flex items-center justify-center pointer-events-auto">
           <div className="text-center">
             <h2 className="text-5xl font-bold text-red-500 mb-4">GAME OVER</h2>
             <div className="text-xl text-gray-300 mb-2">Final Score: <span className="text-white font-bold">{score}</span></div>
             <div className="text-lg text-gray-400 mb-6">Wave: {wave} | Kills: {kills}</div>
-            <button
-              className="px-8 py-3 bg-red-600 hover:bg-red-500 text-white font-bold rounded-lg text-lg transition-colors cursor-pointer"
-              onClick={() => useGameStore.getState().resetGame()}
-            >
-              PLAY AGAIN
-            </button>
+            <button className="px-8 py-3 bg-red-600 hover:bg-red-500 text-white font-bold rounded-lg text-lg transition-colors cursor-pointer"
+              onClick={() => useGameStore.getState().resetGame()}>PLAY AGAIN</button>
           </div>
         </div>
       )}
@@ -749,17 +932,17 @@ function StartScreen({ onStart }: { onStart: () => void }) {
             <div className="text-white font-mono">Right Drag</div>
             <div className="text-gray-400">Shoot</div>
             <div className="text-white font-mono">Left Click</div>
+            <div className="text-gray-400">Melee</div>
+            <div className="text-white font-mono">Space</div>
+            <div className="text-gray-400">Grenade</div>
+            <div className="text-white font-mono">G</div>
             <div className="text-gray-400">Reload</div>
             <div className="text-white font-mono">R</div>
           </div>
         </div>
 
-        <button
-          className="px-10 py-4 bg-red-600 hover:bg-red-500 text-white font-bold rounded-lg text-xl transition-all hover:scale-105 active:scale-95 shadow-lg shadow-red-600/30 cursor-pointer"
-          onClick={onStart}
-        >
-          CLICK TO START
-        </button>
+        <button className="px-10 py-4 bg-red-600 hover:bg-red-500 text-white font-bold rounded-lg text-xl transition-all hover:scale-105 active:scale-95 shadow-lg shadow-red-600/30 cursor-pointer"
+          onClick={onStart}>CLICK TO START</button>
         <p className="text-gray-600 text-xs mt-4">Right-drag to rotate camera</p>
       </div>
     </div>
@@ -779,11 +962,7 @@ export default function TPSGame() {
 
   return (
     <div className="w-screen h-screen relative overflow-hidden bg-black" onContextMenu={(e) => e.preventDefault()}>
-      <Canvas
-        camera={{ fov: 60, near: 0.1, far: 100, position: [0, 4, 8] }}
-        shadows
-        gl={{ antialias: true }}
-      >
+      <Canvas camera={{ fov: 60, near: 0.1, far: 100, position: [0, 4, 8] }} shadows gl={{ antialias: true }}>
         <GameScene />
       </Canvas>
       <HUD />

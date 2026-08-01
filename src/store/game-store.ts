@@ -20,12 +20,18 @@ interface GameState {
   wave: number;
   isReloading: boolean;
   crosshairHit: boolean;
+  meleeCooldown: boolean;
+  grenadeCount: number;
+  maxGrenades: number;
+  isMeleeAttacking: boolean;
 
   // Actions
   startGame: () => void;
   resetGame: () => void;
   shoot: () => void;
   reload: () => void;
+  meleeAttack: () => void;
+  throwGrenade: () => void;
   hitEnemy: (id: string) => void;
   damagePlayer: (amount: number) => void;
   spawnEnemy: (position: [number, number, number]) => void;
@@ -48,6 +54,10 @@ export const useGameStore = create<GameState>((set, get) => ({
   wave: 1,
   isReloading: false,
   crosshairHit: false,
+  meleeCooldown: false,
+  grenadeCount: 3,
+  maxGrenades: 3,
+  isMeleeAttacking: false,
 
   startGame: () => set({ isPlaying: true, isGameOver: false }),
 
@@ -62,6 +72,9 @@ export const useGameStore = create<GameState>((set, get) => ({
       kills: 0,
       wave: 1,
       isReloading: false,
+      meleeCooldown: false,
+      grenadeCount: 3,
+      isMeleeAttacking: false,
     }),
 
   shoot: () => {
@@ -81,6 +94,22 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
   },
 
+  meleeAttack: () => {
+    const { meleeCooldown } = get();
+    if (!meleeCooldown) {
+      set({ meleeCooldown: true, isMeleeAttacking: true });
+      setTimeout(() => set({ isMeleeAttacking: false }), 300);
+      setTimeout(() => set({ meleeCooldown: false }), 1000);
+    }
+  },
+
+  throwGrenade: () => {
+    const { grenadeCount } = get();
+    if (grenadeCount > 0) {
+      set({ grenadeCount: grenadeCount - 1 });
+    }
+  },
+
   hitEnemy: (id: string) => {
     const { enemies, score } = get();
     const updated = enemies.map((e) =>
@@ -91,7 +120,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   },
 
   damagePlayer: (amount: number) => {
-    const { health, maxHealth } = get();
+    const { health } = get();
     const newHealth = Math.max(0, health - amount);
     set({ health: newHealth });
     if (newHealth <= 0) {
