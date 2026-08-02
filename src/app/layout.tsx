@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
 import "./globals.css";
 
+// CSP nonce をリクエストごとに注入するため動的レンダリングを強制する(src/proxy.ts 参照)
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: "FPS Arena - 3D First Person Shooter",
   description: "A 3D first-person shooter game built with Next.js and Three.js",
