@@ -1,0 +1,35 @@
+{
+  "$schema": "https://raw.githubusercontent.com/gentaron/infocollect/HEAD/ecosystem/schema.json",
+  "schema": 1,
+  "name": "fpsgame",
+  "group": "play",
+  "groupLabel": "遊びと実験",
+  "status": "maintained",
+  "role": "Three.js / React Three Fiber の FPS",
+  "stack": "Next.js · R3F",
+  "produces": [
+    "game"
+  ],
+  "consumes": [],
+  "upstream": [],
+  "downstream": [],
+  "siblings": [
+    "1million",
+    "hennanotes",
+    "minagal",
+    "game-of-mina",
+    "OCAI"
+  ],
+  "predecessors": [
+    "game3d"
+  ],
+  "hub": {
+    "repo": "https://github.com/gentaron/infocollect",
+    "map": "https://github.com/gentaron/infocollect/blob/HEAD/ecosystem/README.md",
+    "kb": "https://raw.githubusercontent.com/gentaron/infocollect/HEAD/docs/kb",
+    "mcp": [
+      "infocollect-kb",
+      "forge"
+    ]
+  }
+}
